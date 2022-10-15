@@ -1,0 +1,994 @@
+-- Debenhams Realtime Direct Contribution 
+
+-- Step 0: create reporting date array and period refs [RT: 4 min 13 sec]
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_reporting_dates` as 
+(  
+        SELECT  date_array from(
+        with a as 
+        (select     GENERATE_DATE_ARRAY('2022-02-28', current_date(), INTERVAL 1 DAY) as date_array)
+        select  date_array from a cross join unnest(date_array) as date_array)
+        ORDER BY 1
+)
+;
+
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_reporting_periods` as 
+(  
+select  rep.Reporting_Date                              Reporting_date,
+        rep.Period_Ref                                  Period_Ref,      
+        rep.Period_Start_Date                           Period_start_date,
+        rep.Period_End_Date                             Period_end_date,
+        rep.Data_Join_Date                              Data_Join_Date,
+        case when rep.Period_Ref = 'Today' then 'Today' when rep.Period_Ref = 'Yesterday' then 'Yesterday' when rep.Period_Ref = 'LastWeekDay' then 'LW - day' 
+             when rep.Period_Ref = 'LastMonthDay' then 'LM - day' when rep.Period_Ref = 'LastYearDay' then 'LY - day' 
+             when rep.Period_Ref = 'ThisWeekToDate' then 'TW - WTD' when rep.Period_Ref = 'LastWeekToDate' then 'LW - WTD' 
+             when rep.Period_Ref = 'LastMonthWeekToDate' then 'LM - WTD' when rep.Period_Ref = 'LastYearWeekToDate' then 'LY - WTD'
+        end  as Period
+        
+from    `dp-anly-lake-prod-d316.DataWarehouse.FactReportingPeriodDate`  rep 
+where   rep.Period_Ref in ('Today','Yesterday','LastWeekDay','LastMonthDay','LastYearDay','ThisWeekToDate','LastWeekToDate','LastMonthWeekToDate','LastYearWeekToDate')
+and     rep.Reporting_Date >= '2021-04-12'
+and     rep.Reporting_Date IN (select date_array from Finance_Sandbox.Debs_RT_reporting_dates)
+)
+;
+
+-- STEP 1: extract info at order line level for each Debs brand and channel
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_1test` 
+as  
+    (SELECT
+        fsl.order_id,
+        fsl.Customer_Order_ID,
+        extract(HOUR from fsl.order_datetime)   Order_hour,
+        date(fsl.Order_DateTime)                Order_date,
+        extract(MONTH from fsl.order_datetime)  Order_month,
+        extract(YEAR from fsl.order_datetime)   Order_year,
+        Order_Payment[safe_offset(0)].Method    Payment_type,
+        fsl.Order_Delivery_Type                 Delivery_type, 
+
+        OS.Order_Source_Sales_Channel           Channel,
+        BU.Product_Business_Unit                Business_unit,
+        case when dc.Country_ISO_2_Code in ('GB')          then dc.Country else 'Rest of the world' end as Region, 
+        case when fsl.Order_Delivered_With_Premier is true then 1          else 0                   end as Premier,
+        case when LOWER(dw.website_media) = 'app'          then 'App'      else 'Web'               end as Media,
+
+        fsl.Product_SKU_Key,
+        prd.Product_Style_Parent_Group          Parent_group,
+        prd.Product_Style_Parent_Subgroup       Parent_sub_group,  
+        prd.Product_Style_Type                  Style_type,
+        prd.Product_Style_Group                 Style_group,
+        prd.Product_Style_Brand                 Style_brand,
+        prd.Product_Style_Taxonomy_Collection   Style_taxonomy,
+        prd.Product_Style_Taxonomy_Gender       Product_Gender,
+
+        case when BU.Product_Business_Unit in ('Boohoo Womenswear','Boohoo Menswear', 'Dorothy Perkins', 'Burton', 'NastyGal', 'Wallis', 'Debenhams Beauty', 'Debenhams Home') 
+        then UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(prd.Product_Style_Parent_Group), 'BUR NC ',''), 'BUR CAS ', ''),
+        'BUR FOR ', ''), 'DPK ', ''), 'BLZ ', ''), 'DEB DEB ', ''), 'DEB ', '') ,'MAI ', ''), 'MAN ', ''), 'MTY ', ''), 'NAPA ', ''), 'PRI ', ''), 'RED ', ''), 'WAL ', ''),
+        'BRD ', ''), 'BUR ', ''), 'CST ', ''), 'KM ', ''), 'MP ', ''), 'MW ', ''), 'NG ', ''), 'OAS ', ''), 'WAR ', ''), 'BTY ', '' ), 'MAT ', '' ), 'CASUAL DRESSING ', ''), 
+        'DEB HME ', ''), 'HME ', '' ), 'BOOHOO ', '' ) )
+
+        when BU.Product_Business_Unit in ('Warehouse', 'Coast', 'Karen Millen', 'MissPap', 'Oasis', 'Blue Zoo', 'Debenhams', 'Maine', 'Mantaray', 'Principles', 'Red Herring') 
+        then UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(prd.Product_Style_Group) , 'BUR NC ',''), 'BUR CAS ', ''),
+        'BUR FOR ', ''), 'DPK ', ''), 'BLZ ', ''), 'DEB DEB ', ''), 'DEB ', '') ,'MAI ', ''), 'MAN ', ''), 'MTY ', ''), 'NAPA ', ''), 'PRI ', ''), 'RED ', ''), 'WAL ', ''),
+        'BRD ', ''), 'BUR ', ''), 'CST ', ''), 'KM ', ''), 'MP ', ''), 'MW ', ''), 'NG ', ''), 'OAS ', ''), 'WAR ', ''), 'BTY ', '' ), 'MAT ', '' ), 'CASUAL DRESSING ', ''), 'DEB HME ', '') ) 
+
+        when BU.Product_Business_Unit = 'Mirakl' AND prd.Product_Style_Parent_Group  IN ('Accessories', 'Clothing', 'Footwear') 
+        then UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(prd.Product_Style_Parent_Subgroup ) , 'BUR NC ',''), 'BUR CAS ', ''),
+        'BUR FOR ', ''), 'DPK ', ''), 'BLZ ', ''), 'DEB DEB ', ''), 'DEB ', '') ,'MAI ', ''), 'MAN ', ''), 'MTY ', ''), 'NAPA ', ''), 'PRI ', ''), 'RED ', ''), 'WAL ', ''),
+        'BRD ', ''), 'BUR ', ''), 'CST ', ''), 'KM ', ''), 'MP ', ''), 'MW ', ''), 'NG ', ''), 'OAS ', ''), 'WAR ', ''), 'BTY ', '' ), 'MAT ', '' ), 
+        'CASUAL DRESSING ', ''), 'DEB HME ', ''), 'WOMENS ', '' ),'MENS ', ''), 'CHILDRENS ', '' )  ) 
+
+        when BU.Product_Business_Unit = 'Mirakl' AND prd.Product_Style_Parent_Group  not IN ('Accessories', 'Clothing', 'Footwear') 
+        then UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(prd.Product_Style_Type ) , 'BUR NC ',''), 'BUR CAS ', ''),
+        'BUR FOR ', ''), 'DPK ', ''), 'BLZ ', ''), 'DEB DEB ', ''), 'DEB ', '') ,'MAI ', ''), 'MAN ', ''), 'MTY ', ''), 'NAPA ', ''), 'PRI ', ''), 'RED ', ''), 'WAL ', ''),
+        'BRD ', ''), 'BUR ', ''), 'CST ', ''), 'KM ', ''), 'MP ', ''), 'MW ', ''), 'NG ', ''), 'OAS ', ''), 'WAR ', ''), 'BTY ', '' ), 'MAT ', '' )
+        , 'CASUAL DRESSING ', ''), 'DEB HME ', ''), 'WOMENS ', '' ),'MENS ', ''), 'CHILDRENS ', '' )  )
+        end as Product_category_1,
+  
+        ROUND(SUM(fsl.Sales_Line_GBP_Total_Sales),2)        Gross_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Product_Sales),2)      Product_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Product_Sales_Net),2)  Product_sales_net,
+        ROUND(sum(fsl.Sales_Line_GBP_Carriage_Sales),2)     Carriage_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Carriage_Sales_Net),2) Carriage_sales_net,
+        ROUND(sum(fsl.Sales_Line_GBP_Cost_Net),2)           Cost_net,
+        SUM(fsl.Sales_Line_Product_Unit_Sales)              Units,
+        safe_divide(ROUND(sum(fsl.Sales_Line_GBP_Product_Sales),2), sum(fsl.Sales_Line_Product_Unit_Sales))  Avg_price 
+
+    FROM DataWarehouse.FactSalesLineFast fsl
+
+    INNER JOIN DataWarehouse.DimWebsite dw ON fsl.website_key = dw.website_key
+
+    INNER JOIN DataWarehouse.DimProductBusinessUnit BU ON fsl.Product_Business_Unit_Key = BU.Product_Business_Unit_Key
+
+    INNER JOIN DataWarehouse.DimOrderSource OS ON fsl.Order_Source_Key = OS.Order_Source_Key
+
+    LEFT JOIN `dp-anly-lake-prod-d316.DataWarehouse.DimProductSKU` PRD ON fsl.Product_SKU_Key = PRD.Product_SKU_Key
+
+    JOIN DataWarehouse.DimCountry dc ON fsl.Country_Key = dc.Country_Key
+
+    where date(fsl.order_datetime) >= '2021-04-12'
+    AND dw.website_brand in ('Debenhams')
+    AND BU.Product_Business_Unit not in ('~Unknown Business Unit~')
+    AND Order_Source_Sales_Channel not in ('Samples', '~Unknown order_source_sales_channel~')
+
+    group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
+)
+
+UNION ALL 
+-- Union Beauty Store data 
+    (SELECT
+        fsl.order_id,
+        fsl.Customer_Order_ID,
+        extract(HOUR from fsl.order_datetime)   Order_hour,
+        date(fsl.Order_DateTime)                Order_date,
+        extract(MONTH from fsl.order_datetime)  Order_month,
+        extract(YEAR from fsl.order_datetime)   Order_year,
+        Order_Payment.Method                    Payment_type,
+        fsl.Order_Delivery_Type                 Delivery_type, 
+
+        OS.Order_Source_Sales_Channel           Channel,
+        BU.Product_Business_Unit                Business_unit,
+        case when dc.Country_ISO_2_Code in ('GB')          then dc.Country else 'Rest of the world' end as Region, 
+        case when fsl.Order_Delivered_With_Premier is true then 1          else 0                   end as Premier,
+        case when LOWER(dw.website_media) = 'app'          then 'App'      else 'Web'               end as Media,
+
+        fsl.Product_SKU_Key,
+        prd.Product_Style_Parent_Group          Parent_group,
+        prd.Product_Style_Parent_Subgroup       Parent_sub_group,  
+        prd.Product_Style_Type                  Style_type,
+        prd.Product_Style_Group                 Style_group,
+        prd.Product_Style_Brand                 Style_brand,
+        prd.Product_Style_Taxonomy_Collection   Style_taxonomy,
+        prd.Product_Style_Taxonomy_Gender       Product_Gender,
+
+        UPPER((REPLACE(UPPER(prd.Product_Style_Parent_Group), 'BTY ',''))) as Product_category_1,
+
+        ROUND(SUM(fsl.Sales_Line_GBP_Total_Sales),2)        Gross_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Product_Sales),2)      Product_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Product_Sales_Net),2)  Product_sales_net,
+        ROUND(sum(fsl.Sales_Line_GBP_Carriage_Sales),2)     Carriage_sales,
+        ROUND(sum(fsl.Sales_Line_GBP_Carriage_Sales_Net),2) Carriage_sales_net,
+        ROUND(sum(fsl.Sales_Line_GBP_Cost_Net),2)           Cost_net,
+        SUM(fsl.Sales_Line_Product_Unit_Sales)              Units,
+        safe_divide(ROUND(sum(fsl.Sales_Line_GBP_Product_Sales),2), sum(fsl.Sales_Line_Product_Unit_Sales))  Avg_price 
+
+        FROM DataWarehouse.FactSalesLine fsl
+        INNER JOIN DataWarehouse.DimWebsite dw ON fsl.website_key = dw.website_key
+        INNER JOIN DataWarehouse.DimProductBusinessUnit BU ON fsl.Product_Business_Unit_Key = BU.Product_Business_Unit_Key
+        INNER JOIN DataWarehouse.DimOrderSource OS ON fsl.Order_Source_Key = OS.Order_Source_Key
+        LEFT JOIN `dp-anly-lake-prod-d316.DataWarehouse.DimProductSKU` PRD ON fsl.Product_SKU_Key = PRD.Product_SKU_Key
+        JOIN DataWarehouse.DimCountry dc ON fsl.Country_Key = dc.Country_Key
+
+        where date(fsl.order_datetime) >= '2021-04-12'
+        AND dw.website_brand in ('Debenhams')
+        AND BU.Product_Business_Unit in ('Debenhams Beauty')
+        AND Order_Source_Sales_Channel in ('Store')
+
+        group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
+)
+;
+
+-- 2. Join returns info and clean product hierrachy 
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_2test` 
+as  
+        (SELECT 
+        ORD.*,
+        case when ORD.Order_hour <10 then concat('0',ORD.Order_hour,':00') else concat(ORD.Order_hour,':00') end as Hour,
+
+        case when ORD.Business_unit in       ('Debenhams Beauty')    then 'Debenhams Beauty'
+             when ORD.Channel = 'Website Retail' and ORD.Business_unit not in   ('Debenhams Beauty')    then 'Debenhams OB'
+             when ORD.Channel = 'Marketplace'    and ORD.Business_unit in       ('Mirakl')              then 'External marketplace'
+             when ORD.Channel = 'Marketplace'    and ORD.Business_unit not in   ('Mirakl')              then 'Internal marketplace'
+        else 'Other' end Debenhams_Business_unit,
+
+        case when upper(ORD.Payment_type) like '%KLARNA%'                                               then 'Klarna' 
+        else 'Other' end as Payment_type_1,
+
+        case when ORD.Premier = 1                                                       then 'Unlimited' 
+             when ORD.Delivery_type = 'Express'  and ORD.Region = 'United Kingdom'      then 'UK NDD'
+             when ORD.Delivery_type = 'Standard' and ORD.Region = 'United Kingdom'      then 'UK Standard'
+        else 'Unknown' end as Delivery_type_1,
+
+        case    when UPPER(Product_category_1) like '%TOP%'                                                     THEN 'TOPS'
+                when UPPER(Product_category_1) like '%COAT%' OR UPPER(Product_category_1) like '%JACKET%'       THEN 'JACKETS & COATS'
+                when UPPER(Product_category_1) like '%BRAS%' OR UPPER(Product_category_1) like '%BRIEFS%'       THEN 'LINGERIE'
+                when UPPER(Product_category_1) like '%PLUS%'                                                    THEN 'PLUS'
+                when UPPER(Product_category_1) like '%NIGHTWEAR%' OR UPPER(Product_category_1) like '%LOUNGEWEAR%' OR UPPER(Product_category_1) like '%SLEEPWEAR%'  
+                                                                                                                THEN 'NIGHTWEAR & LOUNGEWEAR'
+                when UPPER(Product_category_1) like '%JEWELLERY%' OR UPPER(Product_category_1) like '%TIGHTS%' OR UPPER(Product_category_1) like '%BAGS%' OR 
+                     UPPER(Product_category_1) like '%BELTS%' OR UPPER(Product_category_1) like '%SCARVES%' OR UPPER(Product_category_1) like '%MASKS%' OR 
+                     UPPER(Product_category_1) like '%SUNGLASSES%' OR UPPER(Product_category_1) like '%UMBRELLA%' OR UPPER(Product_category_1) like '%WATCHES%' OR 
+                     UPPER(Product_category_1) like '%PURSE%' OR UPPER(Product_category_1) like '%GLOVES%' OR UPPER(Product_category_1) like '%HATS%' OR 
+                     UPPER(Product_category_1) like '%ACCESSORIES%'                                             THEN 'ACCESSORIES'
+                when UPPER(Product_category_1) like '%CASUAL SHIRTS%'                                           THEN 'SHIRTS'
+                when UPPER(Product_category_1) like '%BOOTS%' OR UPPER(Product_category_1) like '%SHOES%' OR UPPER(Product_category_1) like '%SLIPPERS%' OR 
+                     UPPER(Product_category_1) like '%FOOTWEAR%' OR UPPER(Product_category_1) like '%SANDALS%' OR UPPER(Product_category_1) like '%TRAINERS%' OR 
+                     UPPER(Product_category_1) like '%HEELS%' OR UPPER(Product_category_1) like '%COURTS%' OR UPPER(Product_category_1) like '%FLATS%'      
+                                                                                                                THEN 'SHOES & BOOTS'
+                when UPPER(Product_category_1) like '%TOPS%'                                                    THEN 'TOPS' 
+                when UPPER(Product_category_1) like '%SWIM%' OR UPPER(Product_category_1) like '%BIKINIS%'      THEN 'SWIMWEAR'
+                when UPPER(Product_category_1) like '%SOCKS%' OR UPPER(Product_category_1) like '%UNDERWEAR%'  OR UPPER(Product_category_1) like '%HOSIERY%' 
+                                                                                                                THEN 'SOCKS & UNDERWEAR'
+                when UPPER(Product_category_1) like '%JOGGERS%' OR UPPER(Product_category_1) like '%TROUSERS%'  THEN 'TROUSERS & JOGGERS'
+                when UPPER(Product_category_1) like '%MATERNITY%'                                               THEN 'MATERNITY'
+                when UPPER(Product_category_1) like '%PLAYSUIT%' OR UPPER(Product_category_1) like '%JUMPSUIT%' THEN 'PLAYSUIT & JUMPSUIT'
+                when UPPER(Product_category_1) like '%OUTFIT SETS%' OR UPPER(Product_category_1) like '%COORDS%' THEN 'CO-ORDS'
+                when UPPER(Product_category_1) like '%BOTTOMS%'                                                 THEN 'BOTTOMS'
+                when UPPER(Product_category_1) like '%LEGGINGS%'                                                THEN 'LEGGINGS & OTHER'
+                when UPPER(Product_category_1) like '%HOODIES & SWEATS%'                                        THEN 'HOODIES & SWEATSHIRTS'
+                when UPPER(Product_category_1) like '%VESTS%'                                                   THEN 'TEES & VESTS'
+                when UPPER(Product_category_1) like 'PET %'                                                     THEN 'PETS'
+                when UPPER(Product_category_1) like '%BEAUTY%'                                                  THEN 'BEAUTY'
+                when UPPER(Product_category_1) like '%BEACHWEAR%'                                               THEN 'HOLIDAY SHOP'
+                when UPPER(Product_category_1) like '%KIDS%'                                                    THEN 'CHILDRENSWEAR'
+                when UPPER(Product_category_1) like '%FITNESS%' OR UPPER(Product_category_1) = 'FIT' OR UPPER(Product_category_1) like '%ACTIVE%' 
+                                                                                                               THEN 'ACTIVEWEAR'
+        else Product_category_1 end as Product_category_2,
+
+        ifnull(RET.Return_Line_GBP_Product_Sales,0)       as Returned_product_sales,
+        ifnull(RET.Return_Line_GBP_Product_Sales_Net, 0)  as Returned_Product_sales_Net,
+        ifnull(RET.Return_Line_GBP_Cost_Net, 0)           as Returned_cost_net,
+        ifnull(RET.Return_Line_Unit_Sales, 0)             as Returned_units
+
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_1test`    ORD
+
+    LEFT JOIN       (
+                    select 
+                    rl.Order_ID,
+                    rl.Product_SKU_Key,
+                    max(date(Return_DateTime)) as return_date,
+                    ROUND(SUM(ifnull(Return_Line_GBP_Product_Sales, 0)),2)         Return_Line_GBP_Product_Sales,
+                    ROUND(SUM(ifnull(Return_Line_GBP_Product_Sales_Net, 0)),2)     Return_Line_GBP_Product_Sales_Net,
+                    ROUND(SUM(ifnull(Return_Line_GBP_Cost_Net, 0)),2)              Return_Line_GBP_Cost_Net,
+                    Sum(ifnull(Return_Line_Unit_Sales,0) )                         Return_Line_Unit_Sales
+                    
+                    from DataWarehouse.FactReturnsLine                    rl
+                    where DATE(rl.Order_DateTime) >= '2021-04-12' 
+
+                    GROUP BY 1,2
+                    )                                                     RET 
+    ON          ORD.order_id = RET.order_id and ORD.Product_SKU_Key = RET.Product_SKU_Key
+)
+;
+
+-- 3. Further clean-up of product categories and brands + ASP, basket size bands and delivery type
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_3test` 
+as  
+(       SELECT ORD.* except(product_gender), BSK.Basket_items,
+        case when ORD.Product_category_2 = 'HOME FRAGRANCE'                                                                                             then 'FRAGRANCE'
+                when ORD.Product_category_2 = 'GIFT WITH PURCHASE'                                                                                      then 'GIFTS'
+                when ORD.Product_category_2 in ('WARM','BATHROOM','CUSHIONS & THROWS','KITCHEN','PET ACCESSORIES','PET GROOMING','PETS','FURNITURE')    then 'HOME'
+                when ORD.Product_category_2 in ('SOCKS & UNDERWEAR', 'TEES & VESTS')                                                                    then 'LINGERIE'
+                when ORD.Product_category_2 in ('ACTIVEWEAR', 'TRACKSUITS')                                                                             then 'SPORTS'
+                when ORD.Product_category_2 in ('BABYWEAR', 'CHILDRENSWEAR')                                                                            then 'BABY / CHILDRENS'
+                when Product_category_2 in ('NON CLOTHING', 'NON-CLOTHING')                                                                             then 'NON-CLOTHING'
+                when ORD.Product_category_2 = 'BLAZERS'                                                                                                 then 'SUITS'
+                when UPPER(ORD.Product_category_2) like '%MAKE UP%' OR UPPER(ORD.Product_category_2) like '%DENTAL%'
+                OR UPPER(ORD.Product_category_2) like '%FACE MASKS%' OR UPPER(ORD.Product_category_2) like '%SKIN%'
+                OR UPPER(ORD.Product_category_2) like '%HAIRCARE & STYLING%' 
+                OR UPPER(ORD.Product_category_2) like '%BATH & BODY%' OR UPPER(ORD.Product_category_2) like '%BEAUTY%'                                  then 'BEAUTY'
+                when ORD.Product_category_2 = 'GIFT'                                                                                                    then 'GIFTS'
+                when UPPER(ORD.Product_category_2) in ('BIG & TALL','TALL')                                                                             then 'BIG & TALL'
+                when UPPER(Product_category_1) like '%JERSEY%' 
+                OR UPPER(Product_category_1) like '%JERSEY CASUAL%'                                                                                     then 'JERSEY'
+                when ORD.Product_category_2 in ('COLLECTIONS','THERMALS','OUTERWEAR','MINIME','TOYS','CLEARANCE')                                       then 'OTHER'
+        else    ORD.Product_category_2 end as Product_category_3,
+
+        case when ORD.Debenhams_Business_unit = 'Debenhams Beauty'                                                      then Style_taxonomy
+                when ORD.Debenhams_Business_unit = 'Debenhams OB'        and ORD.Business_unit = 'Debenhams Home'       then Style_taxonomy
+                        when ORD.Business_unit ='Maine' and UPPER(Product_Gender) = 'FEMALE'                            then 'Maine Womenswear'
+                        when ORD.Business_unit ='Maine' and UPPER(Product_Gender) = 'MALE'                              then 'Maine Menswear'
+                        when ORD.Business_unit ='Mantaray' and UPPER(Product_Gender) = 'FEMALE'                         then 'Mantaray Womenswear'
+                        when ORD.Business_unit ='Mantaray' and UPPER(Product_Gender) = 'MALE'                           then 'Mantaray Menswear'
+                when ORD.Debenhams_Business_unit = 'Debenhams OB'        and ORD.Business_unit != 'Debenhams Home'      then Business_unit
+                when ORD.Debenhams_Business_unit = 'External marketplace'                                               then Style_brand
+                when ORD.Debenhams_Business_unit = 'Internal marketplace'                                               then Business_unit
+        else    Business_unit end as Brand,
+
+        case when ORD.Delivery_type_1 = 'Unlimited'             then 2.02 
+                when ORD.Delivery_type_1 = 'UK NDD'             then 2.02
+                when ORD.Delivery_type_1 = 'UK Standard'        then 1.50
+        else                                                         1.50 end as Delivery_cost,
+
+        case when ORD.Avg_price <= 10                           then 'ASP: £0-10'
+                when ORD.Avg_price > 10 and Avg_price <= 30     then 'ASP: £11-30'
+                when ORD.Avg_price > 30 and Avg_price <= 70     then 'ASP: £31-70'
+                when ORD.Avg_price > 70 and Avg_price <= 100    then 'ASP: £71-100'
+                when ORD.Avg_price > 100                        then 'ASP: >£100'
+        else                                                         'Other' end as Product_price_band,
+
+        case when BSK.Basket_items = 1                          then 'Basket size: 1 item'
+                when BSK.Basket_items between 2 and 5           then 'Basket size: 2-5 items'
+                when BSK.Basket_items > 5                       then 'Basket size: >5 items'
+        else                                                          'Other' end Basket_size,
+
+        FROM    Finance_Sandbox.Debs_RT_data_2test                                                                                  ORD
+
+        left join (select Customer_Order_ID, sum(Units) Basket_items from Finance_Sandbox.Debs_RT_data_2 group by 1 order by 2) BSK
+        on      ORD.Customer_Order_ID = BSK.Customer_Order_ID
+        )
+;
+
+-- 4. Build Returns matrix to look up - UPDATE THIS ONLY ONCE A MONTH
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_returns_matrix as
+select   Debenhams_Business_unit, Premier, Product_price_band, Basket_size, Payment_type_1, Product_category_3
+        ,sum(Product_sales)                                                                     Product_sales
+        ,sum(Returned_product_sales)                                                            Returned_sales
+        ,sum(Units)                                                                             Product_units
+        ,sum(Returned_units)                                                                    Returned_units
+        ,ifnull(safe_divide(sum(ifnull(Returned_product_sales,0)), sum(Product_sales)), 0)      Returns_rate_S
+        ,ifnull(safe_divide(sum(ifnull(Returned_units,0)), sum(Units)), 0)                      Returns_rate_U
+from    Finance_Sandbox.Debs_RT_data_3 
+where   Order_date between (current_date()-120) and (current_date()-29)
+group by 1,2,3,4,5,6
+;
+
+-- 4.1. Join returns matrix to orders data to caculate Net sales and returned units 
+CREATE or REPLACE table Finance_Sandbox.Debs_RT_data_4 
+as 
+(       select *,
+        case    when Debenhams_Business_unit = 'Internal marketplace'           then 0.18 * Net_sales
+                when Order_date between (current_date()-29) and current_date()  then Net_sales-(Cost_net-(ifnull(Returns_rate_S, 0) * Cost_net))
+        else                                                                         (Net_sales-(Cost_net-Returned_cost_net))                 end Product_margin,
+
+        case    when Debenhams_Business_unit = 'Internal marketplace'           then (0.18 * Net_sales) - Net_sales
+                when Order_date between (current_date()-29) and current_date()  then (Cost_net-(ifnull(Returns_rate_S, 0) * Cost_net)) *-1
+        else                                                                         (Cost_net-Returned_cost_net) *-1                         end Cost_of_sale
+from
+(       select  ORD.*     
+                ,case   when extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday))) < 10 
+                        then CONCAT(extract(Year from Order_Date), '/' ,'0', extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday)))) 
+                        else CONCAT(extract(Year from Order_Date), '/' , extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday))))        end Year_week
+                ,ifnull(RET.Returns_rate_S, 0) Returns_rate_S
+                ,ifnull(RET.Returns_rate_U, 0) Returns_rate_U
+                
+                ,case when ORD.Order_date between (current_date()-29) and current_date() then (1-ifnull(RET.Returns_rate_S, 0))*ORD.Product_sales_net  
+                else (Product_sales_net - Returned_Product_sales_Net) end Net_sales
+
+                ,case when ORD.Order_date between (current_date()-29) and current_date() then (ifnull(RET.Returns_rate_U, 0) * ORD.Units)  
+                else ORD.Returned_units                               end Returned_units_EST
+
+                ,case when ORD.Order_date between (current_date()-29) and current_date() then  ifnull(RET.Returns_rate_S, 0) * ORD.Product_sales_net  
+                else ORD.Returned_Product_sales_Net                   end Returned_sales_net,               
+
+        from    Finance_Sandbox.Debs_RT_data_3                  ORD
+        left join Finance_Sandbox.Debs_RT_returns_matrix        RET
+        on      ORD.Debenhams_Business_unit = RET.Debenhams_Business_unit     and ORD.Premier = RET.Premier 
+                and ORD.Product_price_band = RET.Product_price_band           and ORD.Basket_size = RET.Basket_size 
+                and ORD.Payment_type_1 = RET.Payment_type_1                   and ORD.Product_category_3 = RET.Product_category_3 
+)
+)
+;
+
+-- 5.1. Compress into day-hour-BU level to merge with the reporting "shell"
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_data_5 as 
+(select  BU.Order_date, BU.Hour, BU.Debenhams_Business_unit
+        ,BU.Product_sales, BU.Product_sales_net, BU.Product_margin, BU.Net_sales, BU.Units, BU.Returned_sales_net, BU.Returned_units_EST, BU.Cost_net, BU.Cost_of_sale, BU.Delivery_cost
+        ,(BU.Units/DH.Units_DH)*Carriage_sales_net_DH as Carriage_sales_net, (BU.Units/DH.Units_DH)*Carriage_sales_DH as Carriage_sales
+from 
+        (select  Order_date, Hour, Debenhams_Business_unit
+                ,sum(Product_sales)                 Product_sales
+                ,sum(Product_sales_net)             Product_sales_net
+                ,sum(Product_margin)                Product_margin
+                ,sum(Net_sales)                     Net_sales
+                ,sum(Carriage_sales)                Carriage_sales
+                ,sum(Carriage_sales_net)            Carriage_sales_net
+                ,sum(Units)                         Units
+                ,sum(Returned_sales_net)            Returned_sales_net
+                ,sum(Returned_units_EST)            Returned_units_EST
+                ,sum(Cost_net)                      Cost_net
+                ,sum(Cost_of_sale)                  Cost_of_sale
+                ,sum(Delivery_cost)                 Delivery_cost
+
+        from    Finance_Sandbox.Debs_RT_data_4 
+        group by 1,2,3) BU
+
+left join 
+        (select  Order_date, Hour
+                ,sum(Carriage_sales)                Carriage_sales_DH
+                ,sum(Carriage_sales_net)            Carriage_sales_net_DH
+                ,sum(Units)                         Units_DH
+        from    Finance_Sandbox.Debs_RT_data_4 
+        group by 1,2) DH 
+on      BU.Order_date = DH.Order_date and BU.Hour = DH.Hour
+)
+;
+
+-- 5.2. Compress into day-hour-BU-Brand level
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_data_5_BRAND as 
+(select  BU.Order_date, BU.Hour, BU.Debenhams_Business_unit, BU.Brand
+        ,BU.Product_sales, BU.Product_sales_net, BU.Product_margin, BU.Net_sales, BU.Units, BU.Returned_sales_net, BU.Returned_units_EST, BU.Cost_net, BU.Cost_of_sale, BU.Delivery_cost
+        ,(BU.Units/DH.Units_DH)*Carriage_sales_net_DH as Carriage_sales_net, (BU.Units/DH.Units_DH)*Carriage_sales_DH as Carriage_sales
+from
+(
+  select Order_date, Hour, Debenhams_Business_unit, Brand
+        ,sum(Product_sales)                 Product_sales
+        ,sum(Product_sales_net)             Product_sales_net
+        ,sum(Product_margin)                Product_margin
+        ,sum(Net_sales)                     Net_sales
+        ,sum(Carriage_sales)                Carriage_sales
+        ,sum(Carriage_sales_net)            Carriage_sales_net
+        ,sum(Units)                         Units
+        ,sum(Returned_sales_net)            Returned_sales_net
+        ,sum(Returned_units_EST)            Returned_units_EST
+        ,sum(Cost_net)                      Cost_net
+        ,sum(Cost_of_sale)                  Cost_of_sale
+        ,sum(Delivery_cost)                 Delivery_cost
+from    Finance_Sandbox.Debs_RT_data_4 
+group by 1,2,3,4) BU
+
+left join 
+        (select  Order_date, Hour
+                ,sum(Carriage_sales)                Carriage_sales_DH
+                ,sum(Carriage_sales_net)            Carriage_sales_net_DH
+                ,sum(Units)                         Units_DH
+        from    Finance_Sandbox.Debs_RT_data_4 
+        group by 1,2) DH 
+on      BU.Order_date = DH.Order_date and BU.Hour = DH.Hour
+)
+;
+
+-- 5.3. Create brand share of GMV to apportion profit / margin / contribution
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_data_5_BRAND_share as 
+select  BRD.*, BRD.Product_sales as GMV, BU.Product_sales as GMV_BU
+        ,case when ifnull(BU.Product_sales,0) = 0 then 0 else ifnull(BRD.Product_sales,0) / ifnull(BU.Product_sales,0) end as GMV_share
+from    Finance_Sandbox.Debs_RT_data_5_BRAND    BRD 
+left join Finance_Sandbox.Debs_RT_data_5        BU
+on      BRD.Order_date = BU.Order_date and BRD.Hour = BU.Hour and BRD.Debenhams_Business_unit = BU.Debenhams_Business_unit
+order by 1,2,3,4
+;
+
+-- 6. Marketing and other costs - Jayna's spreadsheet imports
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.DEB_OPS_Overhead_Cost_Table` as  
+(       
+        with
+        date_ref as
+        (select * , 
+                DATE_TRUNC(date(Order_Date),MONTH)                                          First_day_month,
+                LAST_DAY(Order_Date)                                                        Last_day_month,
+                date_diff(LAST_DAY(Order_Date), DATE_TRUNC(date(Order_Date),MONTH), DAY)+1  Days_in_month,
+                24                                                                          Hours_in_day,
+                case    when extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday))) < 10 
+                        then CONCAT(extract(Year from Order_Date), '/' ,'0', extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday)))) 
+                        else CONCAT(extract(Year from Order_Date), '/' ,     extract(week from DATE_TRUNC(date(Order_Date),WEEK(Monday)))) 
+                end as Year_Week
+        from 
+                (select 
+                distinct Debenhams_Business_unit, H.Hour, D.Order_date, 
+
+                from `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_4` a
+                cross join  (select distinct Hour       from `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_4`) as H
+                cross join  (select distinct Order_date from `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_4`) as D
+                )
+        order by 3,2,1
+        ),
+
+        Freight_adjustment as
+        (
+        -- Freight cost divided by orders by month
+        select Cast(Month as date) Month, 
+        'Debenhams OB' as Debenhams_Business_Unit,
+        Monthly_total*-1 Freight_adjustment,
+        from  `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_TradingPack_Freight_Adjustment` 
+        ),
+
+        Overhead_costs as
+        (
+        (
+        select Month, 'Debenhams OB' as Debenhams_Business_Unit,
+        (Deb_Studio_Opex * -1000) Deb_Studio_Opex,	(Deb_OB_Direct_Employees * -1000) Deb_OB_Direct_Employees,	(Deb_OB_other_cost * -1000) Deb_OB_other_cost,
+        0 Deb_IM_other_cost, 0	Beauty_direct_employee,	0 Beauty_other_cost, 0	Concessions_direct_employee, 0	Concessions_other_cost
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_OverHead_costs`
+        )
+        UNION ALL
+        (
+        select Month, 
+        'Internal marketplace' as Debenhams_Business_Unit,
+        0 Deb_Studio_Opex, 0	Deb_OB_Direct_Employees, 0	Deb_OB_other_cost,
+        (Deb_IM_other_cost * -1000) Deb_IM_other_cost,
+        0 Beauty_direct_employee,	0 Beauty_other_cost, 0	Concessions_direct_employee, 0	Concessions_other_cost
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_OverHead_costs`
+        )
+        UNION ALL
+        (
+        select Month, 
+        'External marketplace' as Debenhams_Business_Unit,
+        0 Deb_Studio_Opex, 0	Deb_OB_Direct_Employees, 0	Deb_OB_other_cost, 0 Deb_IM_other_cost,
+        0 Beauty_direct_employee,	0 Beauty_other_cost,
+        (Concessions_direct_employee * -1000) Concessions_direct_employee, (Concessions_other_cost * -1000 ) Concessions_other_cost
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_OverHead_costs`
+        )
+        UNION ALL
+        (
+        select Month, 
+        'Debenhams Beauty' as Debenhams_Business_Unit,
+        0 Deb_Studio_Opex, 0	Deb_OB_Direct_Employees, 0	Deb_OB_other_cost, 0 Deb_IM_other_cost,
+        (Beauty_direct_employee * -1000) Beauty_direct_employee,	(Beauty_other_cost * -1000) Beauty_other_cost,
+        0 Concessions_direct_employee, 0 Concessions_other_cost
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_OverHead_costs`
+        )
+        ),
+
+        CS as
+        (
+        Select Hour, order_date, 
+        Count(customer_order_ID ) Customer_Orders,
+        SUM(Units) Units,
+        safe_divide(0.31 * Count(distinct Customer_order_ID), SUM(Units)) Customer_Service_cost_pUnit
+        from Finance_Sandbox.Debs_RT_data_4 
+        group by 1, 2
+        ),
+
+        Outbound_carriage_cost as
+        (
+        select Order_date, Hour,
+        safe_divide(SUM(Outbound_carriage_cost_per_order), SUM(Units)) outbound_carriage_cost_pOrder_pUnit
+        from
+                (
+                        select  Order_date, Hour, Delivery_cost,
+                                count(distinct Customer_Order_ID)  Orders,
+                                sum(Units)                         Units,
+                                Delivery_cost * count(distinct Customer_Order_ID) Outbound_carriage_cost_per_order
+                        from    Finance_Sandbox.Debs_RT_data_4 
+                        where   Debenhams_Business_unit in ('Debenhams OB', 'Debenhams Beauty')
+                        and     Parent_group not in ('~Unknown Product Parent Group~')
+                        group by 1,2,3
+                        order by 1,2,3
+                )
+        group by 1,2
+        order by 1,2
+        ),
+
+        -- Return carriage cost OB and Beauty
+        RC as
+        (
+        Select Hour, 
+        order_date, 
+        count(distinct Customer_Order_ID) orders,
+        SUM(Units)                         Units,
+        SUM(Returned_units_EST) Returned_units_EST,
+        safe_divide(SUM(Returned_units_EST), SUM(Units))                                                Return_rate_pHour,
+        safe_divide(SUM(Returned_units_EST), SUM(Units)) * count(distinct Customer_Order_ID)            Return_Customers_Orders,
+        safe_divide(SUM(Returned_units_EST), SUM(Units)) * count(distinct Customer_Order_ID) *1.54      Return_Customers_Orders_carriage_cost,
+        safe_divide(safe_divide(SUM(Returned_units_EST) , SUM(Units)) * count(distinct Customer_Order_ID) *1.54 , SUM(Returned_units_EST) ) returned_carriage_cost_pUnit
+        from Finance_Sandbox.Debs_RT_data_4 
+        where Debenhams_Business_Unit in ('Debenhams OB', 'Debenhams Beauty')
+        group by 1, 2
+        order by 1,2
+        ), 
+
+        data_4_summary as
+        (
+        Select Hour, Order_date, Debenhams_Business_Unit, Business_unit, Year_Week, 
+        SUM(Units) Units_BU,
+        SUM(Returned_units_EST) Returned_units_EST,
+        SUM(Returned_Units) Returned_Units_Actual
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_4`
+        group by 1,2,3, 4, 5
+        ),
+
+        Outbound_return_Ops_costs as
+        (
+        Select Hour,	Order_date,	Debenhams_Business_Unit,
+        SUM(Outbound_Ops_cost) Outbound_Ops_costs,
+        SUM(Return_Ops_cost_EST) Return_Ops_cost_EST,
+        SUM(Returned_OpsCost_Actual) Returned_OpsCost_Actual
+        from
+        (
+        SELECT t2.*, 
+        (Outbound_Ops_cost_pUnit * Units_BU * -1) Outbound_Ops_cost, 
+        (Return_Ops_cost_pUnit * Returned_units_EST * -1) Return_Ops_cost_EST,
+        (Return_Ops_cost_pUnit * Returned_Units_Actual) Returned_OpsCost_Actual
+        from data_4_summary as t2
+        left join `dp-anly-lake-prod-d316.Finance_Sandbox.DEB_Outbound_Ret_CostTable` as jc 
+        on t2.Debenhams_Business_Unit = jc.Debenhams_Business_Unit and t2.Business_unit = jc.Business_unit and t2.Year_Week = jc.week
+        order by 2,1 
+        )
+        group by 1,2,3
+        ),
+
+        Markdown_Contribution as
+        (
+        SELECT 
+        'Debenhams Beauty' as Debenhams_Business_Unit,
+        Date,
+        SUM(SOA_claim)  Markdown_cont_beauty_pDay,
+        SUM(SOA_claim) / 24 Markdown_cont_beauty_pHour
+        FROM `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_Beauty_Markdown_contributions` 
+        group by 1, 2
+        ),
+
+        BNPL_WEBLOYAL_Share as
+        (
+         select   A.Order_date, B.Hour,
+        A.GMV_2, C.BNPL_pDay, D.Web_Loyalty_pDay,
+        B.Debenhams_Business_unit,
+        sum(B.Product_sales) GMV_1, ifnull(safe_divide(sum(B.Product_sales), A.GMV_2) , 0)      GMV_share 
+        ,ifnull(C.BNPL_pDay,0)* safe_divide(sum(B.Product_sales), A.GMV_2)                      BNPL
+        ,ifnull(D.Web_Loyalty_pDay,0)*safe_divide(sum(B.Product_sales), A.GMV_2)               Web_Loyalty
+        
+        from
+                (-- Get summary by order date and hour of GMV to calulate share (BU not needed as BNPL and Web loyalty apportioned across all BU)
+                select  dr.Order_date,
+                First_day_month,
+                sum(Product_sales)      GMV_2 
+                from date_ref           as dr
+                left join Finance_Sandbox.Debs_RT_data_4 RT4
+                on dr.Debenhams_Business_unit = RT4.Debenhams_Business_unit and dr.Hour = RT4.Hour and dr.Order_Date = RT4.Order_date
+                group by 1,2
+                order by 1,2
+                ) as A
+  
+        left join Finance_Sandbox.Debs_RT_data_4 B
+        on A.Order_date = B.Order_date
+        left join 
+                (select Date,SUM(BNPL) BNPL_pDay 
+                from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_BNPL_WebLoyalty_Beauty_BeautyCont`
+                group by 1
+                ) C
+        on A.Order_date = C.Date 
+        left join         
+                (
+                SELECT  *,
+                (Web_Loyalty * -1000) / ((date_diff(LAST_DAY(Date), DATE_TRUNC(date(Date),MONTH), DAY)+1)) Web_Loyalty_pDay
+                FROM `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_Trading_Web_Loyalty` 
+                ) as D
+        on A.First_day_month = D.Date
+        group by 1,2,3,4,5,6
+        order by 1,2,3,4,5,6
+        ),
+
+        WebLoyalty_BNPL as
+        (
+        -- get full permutations by order date, hour and bu
+        select  dr.Order_date, dr.Hour, dr.Debenhams_Business_unit,
+        SHR.BNPL,
+        SHR.Web_Loyalty
+        from date_ref as dr
+        left join BNPL_WEBLOYAL_Share as SHR
+        on dr.Order_date = SHR.Order_date and dr.Hour = SHR.Hour and dr.Debenhams_Business_unit = SHR.Debenhams_Business_unit
+        ),
+
+        Beauty_EMarketplace_Cont as
+        (
+        (
+        Select 
+        Date,
+        'Debenhams Beauty' as Debenhams_Business_Unit,
+        Beauty / 24 Beauty_cont , 0 as Marketplace_cont
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_BNPL_WebLoyalty_Beauty_BeautyCont`
+        )
+        UNION ALL
+        (
+        Select 
+        Date,
+        'External marketplace' as Debenhams_Business_Unit,
+        0 as Beauty_cont, Marketplace / 24 Marketplace_cont
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_BNPL_WebLoyalty_Beauty_BeautyCont`
+        )
+        )
+
+select
+        dr.*, 
+        safe_divide(Deb_Studio_Opex , (days_in_month * hours_in_day))             Deb_Studio_Opex2,
+        safe_divide(Deb_OB_Direct_Employees , (days_in_month * hours_in_day))     Deb_OB_Direct_Employees2,
+        safe_divide(Deb_OB_other_cost , (days_in_month * hours_in_day))           Deb_OB_other_cost2,
+        safe_divide(Deb_IM_other_cost , (days_in_month * hours_in_day))           Deb_IM_other_cost2,
+        safe_divide(Beauty_direct_employee , (days_in_month * hours_in_day))      Beauty_direct_employee2,
+        safe_divide(Beauty_other_cost , (days_in_month * hours_in_day))           Beauty_other_cost2,
+        safe_divide(Concessions_direct_employee , (days_in_month * hours_in_day)) Concessions_direct_employee2,
+        safe_divide(Concessions_other_cost , (days_in_month * hours_in_day))      Concessions_other_cost2,
+        safe_divide(Freight_adjustment , (days_in_month * hours_in_day))          Freight_adjustment2,
+
+        Customer_Service_cost_pUnit,
+        outbound_carriage_cost_pOrder_pUnit,
+        returned_carriage_cost_pUnit,
+
+        Outbound_Ops_costs,
+        Return_Ops_cost_EST,
+        Returned_OpsCost_Actual,
+
+        Markdown_cont_beauty_pHour,
+        BNPL, 
+        Web_Loyalty,
+        Beauty_cont ,
+        Marketplace_cont
+
+from    date_ref as dr
+left join Overhead_costs OC
+on      dr.first_day_month = OC.Month and dr.Debenhams_Business_Unit = OC.Debenhams_Business_Unit
+
+left join Freight_Adjustment FA
+on      dr.first_day_month = FA.Month and dr.Debenhams_Business_Unit = FA.Debenhams_Business_Unit
+
+left join CS
+on      dr.hour = cs.hour and dr.order_date = cs.order_date
+
+left join Outbound_carriage_cost occ
+on dr.hour = occ.hour and dr.order_date = occ.order_date and dr.Debenhams_Business_Unit in ('Debenhams OB', 'Debenhams Beauty')
+
+left join RC
+on      dr.hour = rc.hour and dr.order_date = rc.order_date and dr.Debenhams_Business_Unit in ('Debenhams OB', 'Debenhams Beauty')
+
+left join Outbound_return_Ops_costs c
+on      dr.Hour = c.Hour and dr.Order_Date = C.Order_date and dr.Debenhams_Business_Unit = c.Debenhams_Business_Unit
+
+left join Markdown_Contribution mc
+on      dr.order_date = mc.Date and dr.Debenhams_Business_Unit = mc.Debenhams_Business_Unit
+
+left join WebLoyalty_BNPL wb
+on      dr.Hour = wb.Hour and dr.Order_Date = wb.Order_date and dr.Debenhams_Business_Unit = wb.Debenhams_Business_Unit
+
+left join Beauty_EMarketplace_Cont bem
+on  dr.Order_Date = bem.Date  and dr.Debenhams_Business_Unit = bem.Debenhams_Business_Unit
+
+order by 1, 2
+)
+;
+
+--- 6.1. Marketing spend 
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_MKT as 
+select  distinct DT.Order_date, MC.Marketing_spend, rtb.RTB_retargeting_cost, rtb_display.Display_cost, rtb2.RTB_House_Retargeting_Cost2
+        ,(ifnull(MC.Marketing_spend, 0) + ifnull(rtb.RTB_retargeting_cost, 0) + ifnull(Display_cost, 0) + ifnull(RTB_House_Retargeting_Cost2,0))          Total_marketing_spend
+        ,(ifnull(MC.Marketing_spend, 0) + ifnull(rtb.RTB_retargeting_cost, 0) + ifnull(Display_cost, 0) + ifnull(RTB_House_Retargeting_Cost2,0) ) / 24     Total_marketing_spend_pHour
+        ,lag( ((ifnull(MC.Marketing_spend, 0) + ifnull(rtb.RTB_retargeting_cost, 0) + ifnull(Display_cost, 0) + ifnull(RTB_House_Retargeting_Cost2,0)) / 24 )) OVER (ORDER BY Order_date) LAG_Total_marketing_spend_pHour
+from    `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_4` DT
+left join    
+        (
+        SELECT 
+                f.Date,
+                SUM(f.total_spend) * -1                                                         Marketing_spend
+        FROM    `dp-anly-lake-prod-d316.Marketing.DigitalMarketingROI_Cost_Apportionment_Union` f
+        join    `dp-anly-lake-prod-d316.DataWarehouse.DimWebsiteBrand`                          wb 
+        on      wb.Website_Brand_Key = f.Website_Brand_Key
+        WHERE   wb.Website_Brand_ID = 'DEBENHAMS'
+        AND     f.ref <> 'GA_Sessions'
+        group by 1
+        ) MC
+on      mc.date = DT.Order_date
+left join 
+        (select Date__UTC_, sum(Cost__GBP_)*-1 as RTB_retargeting_cost from dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_retargeting_RTB_MarketingSpend group by 1) rtb
+on      rtb.Date__UTC_ = DT.Order_date
+left join 
+        (SELECT  Date__UTC_ as Date, SUM(Cost__GBP_) * -1 Display_cost FROM Finance_Sandbox.Debenhams_retargetting_RTB_DisplaySpend  group by 1)  rtb_display 
+on      DT.Order_Date = rtb_display.Date
+left join (SELECT Cast(datetime_utc as date) date, SUM(Cost)*-1 RTB_House_Retargeting_Cost2 FROM `dp-anly-lake-prod-d316.Marketing.RTBhouse_clicks`
+where Cast(datetime_utc as date) >= '2022-08-01' # this is to ensure this data doesnt overlap with the manual imports from Debenhams_retargeting_RTB_MarketingSpend
+group by 1) as rtb2
+on rtb2.Date = DT.Order_Date
+group by 1,2,3,4,5
+order by 1
+;
+
+
+-- 6.1B. Summarise marketing spend by date / hour / BU
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_MKT_Summary as 
+(
+select  CJ.Order_date, CJ.Hour, CJ.Debenhams_Business_unit, MKT.Marketing_spend_pHour, ifnull(GMV.GMV,0) as GMV, ifnull(SHR.GMV_day,0) as GMV_day
+        ,ifnull(safe_divide(GMV.GMV,SHR.GMV_day),0)                        as GMV_share
+        ,ifnull(safe_divide(GMV.GMV,SHR.GMV_day),0)*Marketing_spend_pHour  as Marketing_spend 
+
+from    (select distinct Debenhams_Business_unit, Hour, Order_date from Finance_Sandbox.DEB_OPS_Overhead_Cost_Table)                            CJ
+
+left join (select Order_date, Hour, Debenhams_Business_unit, sum(Product_sales) as GMV from Finance_Sandbox.Debs_RT_data_5 group by 1,2,3)      GMV
+on      CJ.Debenhams_Business_unit = GMV.Debenhams_Business_unit and CJ.Hour = GMV.Hour and CJ.Order_date = GMV.Order_date
+
+left join (select Order_date, Hour, sum(Product_sales) as GMV_day from Finance_Sandbox.Debs_RT_data_5 group by 1,2)                             SHR
+on      CJ.Hour = SHR.Hour and CJ.Order_date = SHR.Order_date
+
+left join (select Order_date       
+                 ,case when Order_date = current_date and (Total_marketing_spend_pHour is null or Total_marketing_spend_pHour = 0) 
+                       then LAG(LAG_Total_marketing_spend_pHour) OVER (ORDER BY Order_date) 
+                       when Order_date = (current_date - 1) and (Total_marketing_spend_pHour is null or Total_marketing_spend_pHour = 0) 
+                       then LAG_Total_marketing_spend_pHour 
+                       else Total_marketing_spend_pHour
+                 end as Marketing_spend_pHour
+          from   Finance_Sandbox.Debs_RT_MKT
+          ) MKT
+on      CJ.Order_date = MKT.Order_date
+order by 1,2,3
+)
+;
+      
+-- 6.2. Calculate performance metrics 
+CREATE OR REPLACE TABLE Finance_Sandbox.Debs_RT_data_6 as 
+select  CST2.Order_date, CST2.Hour, CST2.Debenhams_Business_unit
+        ,Product_sales                                                                                  as GMV
+        ,Net_sales                                                                                      as Net_sales
+        ,ifnull(Marketing_spend,0)                                                                      as Marketing_spend 
+        ,Carriage_sales                                                                                 as Carriage_sales
+        ,Carriage_sales_net                                                                             as Carriage_sales_net
+        ,(ifnull(Product_margin, 0) + ifnull(Markdown_cont_beauty_pHour,0))                                        as Gross_profit
+        ,(ifnull(Product_margin,0) + ifnull(Markdown_cont_beauty_pHour,0) + ifnull(Freight_adjustment2,0))        as Margin
+
+        ,(ifnull(Product_margin, 0) + ifnull(Markdown_cont_beauty_pHour,0) + ifnull(Freight_adjustment2,0) + ifnull(Outbound_Ops_costs,0) + ifnull(Return_Ops_cost_EST,0) 
+        + ifnull(Customer_Service_Costs,0) + ifnull(outbound_carriage_cost_pOrder_pUnit,0) + ifnull(Returned_Carriage_Cost,0) + ifnull(Carriage_sales,0) 
+         )                                                                                              as Contribution_pre_mkt
+        
+        ,((ifnull(Product_margin,0) + ifnull(Markdown_cont_beauty_pHour,0) + ifnull(Freight_adjustment2,0)) + ifnull(Marketing_spend,0)- ifnull(BNPL, 0) - ifnull(Web_Loyalty, 0) 
+           - ifnull(Beauty_cont, 0) - ifnull(Marketplace_cont, 0) + ifnull(Outbound_Ops_costs,0) + ifnull(Return_Ops_cost_EST,0)  + ifnull(Customer_Service_Costs,0) 
+           + ifnull(outbound_carriage_cost_pOrder_pUnit2,0) + ifnull(Returned_Carriage_Cost,0) + ifnull(Carriage_sales_net,0) + (ifnull(Product_sales,0) *-0.01) #selling cost  
+           + ifnull(Deb_Studio_Opex2,0)  + ifnull(Beauty_direct_employee2,0) + ifnull(Deb_OB_Direct_Employees2,0) + ifnull(Concessions_direct_employee2,0) 
+           + ifnull(Deb_OB_other_cost2,0) + ifnull(Deb_IM_other_cost2,0) + ifnull(Beauty_other_cost2,0) + ifnull(Concessions_other_cost2,0)  
+        )                                                                          as Direct_contribution,
+        
+from 
+        (
+        select  CST.*
+                ,ORD.Product_sales, ORD.Carriage_sales, ORD.Carriage_sales_net, ORD.Delivery_cost, ORD.Net_sales, ORD.Units, ORD.Returned_units_EST, ORD.Product_margin
+                ,(Customer_Service_cost_pUnit * Units *-1)               Customer_Service_Costs
+                ,(outbound_carriage_cost_pOrder_pUnit * Units *-1)       outbound_carriage_cost_pOrder_pUnit2
+                ,(returned_carriage_cost_pUnit * Returned_units_EST *-1) Returned_Carriage_Cost
+        from    `dp-anly-lake-prod-d316.Finance_Sandbox.DEB_OPS_Overhead_Cost_Table` CST
+        left join Finance_Sandbox.Debs_RT_data_5                                     ORD
+        on      CST.Debenhams_Business_unit = ORD.Debenhams_Business_unit and CST.Hour = ORD.Hour  and ORD.Order_date = CST.Order_date
+        ) CST2
+        left join Finance_Sandbox.Debs_RT_MKT_Summary  MKT
+        on CST2.Order_date = MKT.Order_date and CST2.Hour = MKT.Hour and CST2.Debenhams_Business_unit = MKT.Debenhams_Business_unit
+
+        UNION ALL
+
+        (
+        with  date_ref_WS as
+          (select Order_date, Hour, First_day_month, Days_in_month, hours_in_day, 'Wholesale' as Debenhams_Business_Unit from Finance_Sandbox.DEB_OPS_Overhead_Cost_Table group by 1,2,3,4,5),
+
+        date_ref_Royalty as
+        (select Order_date, Hour, 'Royalty' as Debenhams_Business_Unit	 from Finance_Sandbox.DEB_OPS_Overhead_Cost_Table group by 1,2),
+
+        Wholesale as
+        (
+        SELECT Date,	Week,	'Wholesale' as Debenhams_Business_Unit,
+        Sales / 24 as Wholesale_Sales_pHour, COS / 24 as contingency_COS_pHour, 
+        Ops	/ 24 as Wholesale_Ops_pHour, OH / 24 as Wholesale_Overheads_pHour, EBITDA / 24 Wholesale_EBITDA_pHour,
+        Sales_Budget / 24 Sales_Budget_pHour,	COS_budget / 24 COS_Budget_pHour,	Ops_Budget / 24 Ops_Budget_pHour,	OH_Budget / 24 OH_Budget_pHour,
+        (Ops_Budget / 24)
+
+        FROM `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_Trading_Pack_Wholesale` 
+        ),
+
+        Licence_Royalty as
+        (
+        select Date,	Week,	'Royalty' as Debenhams_Business_Unit,
+        Sales as Licence_Royalty_Sales,
+        Sales / 24 as Licence_Royalty_Sales_pHour
+        from `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_Trading_Pack_Licence_Costs` as R
+        ),
+
+        Wholesale_Opex as
+        (
+        SELECT month,  
+        Wholesale_Opex * -1000 as  Wholesale_Opex 
+        FROM `dp-anly-lake-prod-d316.Finance_Sandbox.Debenhams_OverHead_costs` 
+        )
+
+                select dr.Order_date, dr.Hour, dr.Debenhams_Business_Unit, 
+                0 as GMV, 
+                Wholesale_Sales_pHour as Net_sales,
+                0 as Marketing_spend,
+                0 as Carriage_sales,    
+                0 as Carriage_sales_net,
+                Wholesale_Sales_pHour + contingency_COS_pHour as Gross_profit,
+                Wholesale_Sales_pHour + contingency_COS_pHour as Margin,
+                Wholesale_Sales_pHour + contingency_COS_pHour as Contribution_pre_mkt,
+                
+                (Wholesale_Sales_pHour + contingency_COS_pHour) #Margin 
+                + (  (Ops_Budget_pHour / Sales_Budget_pHour) * Wholesale_Sales_pHour ) 
+                + safe_divide(Wholesale_Opex , (days_in_month * hours_in_day)) as Direct_contribution
+
+                from date_ref_WS dr
+                left join Wholesale WS
+                on dr.Order_Date = WS.date
+                left join Wholesale_Opex WO
+                on dr.First_day_month = WO.Month 
+
+                UNION ALL
+
+                select dr.Order_date, dr.Hour, dr.Debenhams_Business_Unit,
+                0 as GMV,
+                Licence_Royalty_Sales_pHour as Net_sales,
+                0 as Marketing_spend,
+                0 as Carriage_sales, 
+                0 as Carriage_sales_net,
+                Licence_Royalty_Sales_pHour as Gross_profit,
+                Licence_Royalty_Sales_pHour as Margin,
+                Licence_Royalty_Sales_pHour as Contribution_pre_mkt,
+                Licence_Royalty_Sales_pHour as Direct_contribution, 
+                from date_ref_Royalty dr
+                left join Licence_Royalty R
+                on dr.Order_Date = R.date
+
+)
+;
+
+-- 7.1. Join period refs and summarise data to push into Tableau - BUSINESS UNIT
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_TEMP` 
+as  
+(               
+        select  dat.*,
+                        rep.Reporting_date,
+                        rep.Period,
+                        rep.Period_start_date,
+                        rep.Period_end_date,
+                        
+        from    Finance_Sandbox.Debs_RT_data_6                  dat     -- CHANGE TABLE NAME HERE
+        join    Finance_Sandbox.Debs_RT_reporting_periods       rep 
+        on      rep.Data_Join_Date = date(dat.Order_date)
+        where   rep.Reporting_date >= '2022-02-28'
+) 
+;
+
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_7_OVERALL_DAY` 
+as  
+(
+        SELECT       
+                Reporting_date, Hour, Period, Debenhams_Business_unit,
+                ifnull(ROUND(SUM(GMV),2),0)                                                               AS  GMV,
+                ifnull(ROUND(sum(Carriage_sales),2),0)                                                    AS  Carriage_sales,
+                ifnull(ROUND(sum(Net_sales),2),0)                                                         AS  Net_sales,
+                ifnull(ROUND(SUM(Gross_profit),2),0)                                                      AS  Gross_profit,
+                safe_divide( ifnull(ROUND(SUM(Gross_profit),2),0) , ifnull(ROUND(sum(Net_sales),2),0)   ) AS  Gross_profit_Perc,  
+                ifnull(ROUND(SUM(Margin),2),0)                                                            AS  Margin,
+                safe_divide( ifnull(ROUND(SUM(Margin),2),0) , ifnull(ROUND(sum(Net_sales),2),0) )         AS  Margin_Perc,
+                ifnull(ROUND(SUM(Marketing_spend),2),0)  * -1                                             AS  Marketing_spend,
+                ifnull(ROUND(SUM(Direct_contribution),2),0)                                               AS  Direct_contribution,
+                safe_divide(ifnull(sum(Marketing_spend),0)*-1, ifnull(sum(Net_sales),0))                  AS  Marketing_to_net_sales
+
+    FROM        Finance_Sandbox.Debs_RT_TEMP
+    WHERE       Period in ('Today', 'Yesterday', 'LW - day', 'LM - day', 'LY - day')
+    GROUP BY    1,2,3,4
+) 
+;
+
+
+
+-- 7.2. Join period refs and summarise data to push into Tableau - BRAND
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_TEMP_BRAND` 
+as  
+(               select  dat.*,
+                        rep.Reporting_date,
+                        rep.Period,
+                        rep.Period_start_date,
+                        rep.Period_end_date
+                        
+                from    Finance_Sandbox.Debs_RT_data_5_BRAND_share      dat     
+                left join    Finance_Sandbox.Debs_RT_reporting_periods  rep 
+                on      rep.Data_Join_Date = date(dat.Order_date)
+                where   rep.Reporting_date >= '2022-02-28'
+) 
+;
+
+CREATE or REPLACE table `dp-anly-lake-prod-d316.Finance_Sandbox.Debs_RT_data_7_BRAND_DAY` 
+as  
+(
+        SELECT       
+                TMP.Reporting_date, TMP.Hour, TMP.Period, TMP.Debenhams_Business_unit, TMP.Brand,
+                ifnull(ROUND(SUM(TMP.GMV),2), 0)                                   AS  GMV,
+                ifnull(ROUND(sum(TMP.Carriage_sales),2), 0)                        AS  Carriage_sales,
+                ifnull(ROUND(sum(TMP.Net_sales),2) , 0)                            AS  Net_sales,
+
+                Case when TMP.Debenhams_Business_unit='Debenhams Beauty' then ifnull(ROUND(SUM(DAY.Gross_profit*TMP.GMV_share),2) , 0)  
+                     else SUM(TMP.Product_margin) end                              AS  Gross_profit,
+
+                Case when TMP.Debenhams_Business_unit='Debenhams Beauty' then 
+                safe_divide( ifnull(ROUND(SUM(DAY.Gross_profit*TMP.GMV_share),    2),0) , ifnull(ROUND(sum(TMP.Net_sales),2),0)   )  else  
+                safe_divide(ifnull(round(SUM(TMP.Product_margin),2) ,0), ifnull(ROUND(sum(TMP.Net_sales),2),0) )  
+                end                                                                AS  Gross_profit_Perc,
+
+                Case when TMP.Debenhams_Business_unit in ('Debenhams Beauty','Debenhams OB') then 
+                ifnull(ROUND(SUM(DAY.Margin*TMP.GMV_share),2), 0) else SUM(TMP.Product_margin)  
+                end                                                                AS  Margin,
+                
+                Case when TMP.Debenhams_Business_unit in ('Debenhams Beauty','Debenhams OB') then 
+                         safe_divide( ifnull(ROUND(SUM(DAY.Margin*TMP.GMV_share),2),0) , ifnull(ROUND(sum(TMP.Net_sales),2),0) )   
+                         else safe_divide( ifnull(ROUND(SUM(TMP.Product_margin),2),0) ,  ifnull(ROUND(sum(TMP.Net_sales),2),0) )  
+                End                                                                AS  Margin_Perc,
+
+                ifnull(ROUND(SUM(DAY.Marketing_spend*TMP.GMV_share),2) , 0) * -1       AS  Marketing_spend,
+                ifnull(ROUND(SUM(DAY.Direct_contribution*TMP.GMV_share),2) , 0)    AS  Direct_contribution,
+                safe_divide(ifnull(SUM(DAY.Marketing_spend*TMP.GMV_share),0) * -1, ifnull(sum(TMP.Net_sales),0)) AS Marketing_to_net_sales
+
+    FROM        Finance_Sandbox.Debs_RT_TEMP_BRAND                    TMP
+    LEFT JOIN   Finance_Sandbox.Debs_RT_data_7_OVERALL_DAY      DAY
+    ON          TMP.Reporting_date = DAY.Reporting_date and TMP.Hour = DAY.Hour and TMP.Period = DAY.Period and TMP.Debenhams_Business_unit = DAY.Debenhams_Business_unit
+    WHERE       TMP.Period in ('Today', 'Yesterday', 'LW - day', 'LM - day', 'LY - day')
+    GROUP BY    1,2,3,4,5
+) 
+;
